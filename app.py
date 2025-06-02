@@ -9,6 +9,8 @@ import os
 import io
 import base64
 from datetime import datetime
+from PIL import Image, ImageDraw, ImageFont
+import threading
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024   # batasi upload 2 MB
@@ -40,23 +42,19 @@ FEATURE_RANGES = {
     "GPA": (0, 4)
 }
 
-STATS_FILE = prediction_stats = "prediction_stats.json"
+HISTORY_FILE = "history.json"
+history_lock = threading.Lock()
 
-# Fungsi untuk memuat statistik dari file
-def load_stats():
-    if os.path.exists(STATS_FILE):
-        with open(STATS_FILE, "r") as f:
-            return json.load(f)
-    return {"total_predictions": 0, "successful_predictions": 0}
-
-# Fungsi untuk menyimpan statistik ke file
-def save_stats():
-    with open(STATS_FILE, "w") as f:
-        json.dump(prediction_stats, f)
-
-
-# Statistik prediksi
-prediction_stats = load_stats()
+def append_history(entry):
+    with history_lock:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, "r") as f:
+                history = json.load(f)
+        else:
+            history = []
+        history.append(entry)
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
 
 @app.route('/')
 def home():
@@ -71,63 +69,10 @@ def predict():
     if request.method == "POST":
         # 1) Jika datang dari manual form
         if 'submit_manual' in request.form:
-            # Pilih model berdasarkan input pengguna
-            model_choice = request.form['model_choice']
-            if model_choice == 'svm':
-                features = FEATURES_SVM
-                scaler = scalersvm
-                le = lesvm
-                model = svm
-            else:  # 'nn'
-                features = FEATURES_NN
-                scaler = scalernn
-                le = lenn
-                model = nn
-
-            # Kumpulkan nilai input
-            vals = [float(request.form[f]) for f in features]
-            manual_input = dict(zip(features, vals))
-            X = scaler.transform([vals])
-            p = model.predict(X)
-            manual_pred = le.inverse_transform(p)[0]
-
-            # Tambahkan hasil prediksi ke data input
-            manual_input['Predicted_Stress_Level'] = manual_pred
-
-            # Simpan hasil prediksi ke gambar
-            plt.figure(figsize=(8, 4))
-            plt.title("Hasil Prediksi Tingkat Stres")
-
-            #  Hanya gunakan fitur numerik untuk grafik
-            numeric_features = {key: value for key, value in manual_input.items() if isinstance(value, (int, float))}
-            bars = plt.bar(numeric_features.keys(), numeric_features.values(), color='skyblue')
-
-            # Tambahkan teks hasil prediksi di atas grafik
-            for bar in bars:
-                plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
-                        f"{bar.get_height():.2f}", ha='center', va='bottom')
-
-            # Tambahkan hasil prediksi sebagai teks di grafik
-            plt.text(len(numeric_features) - 1, max(numeric_features.values()) + 0.5,
-                    f"Predicted Stress Level: {manual_pred}", fontsize=12, color='red', ha='center')
-            
-            plt.xticks(rotation=45, ha='right')
-            plt.xlabel("Fitur")
-            plt.ylabel("Nilai")
-            plt.tight_layout()
-            plt.savefig("static/manual_prediction.jpg")
-            plt.close()
-            
-
-        # 2) Jika datang dari upload CSV
-        elif 'submit_upload' in request.form:
-            file = request.files['file']
-            if file and file.filename.endswith('.csv'):
-                df = pd.read_csv(io.StringIO(file.stream.read().decode("UTF8")))
-
+            try:
                 # Pilih model berdasarkan input pengguna
-                model_choice_upload = request.form['model_choice_upload']
-                if model_choice_upload == 'svm':
+                model_choice = request.form['model_choice']
+                if model_choice == 'svm':
                     features = FEATURES_SVM
                     scaler = scalersvm
                     le = lesvm
@@ -138,22 +83,101 @@ def predict():
                     le = lenn
                     model = nn
 
-                # Validasi kolom
-                if not all(col in df.columns for col in features):
-                    upload_results = f"CSV harus memiliki kolom: {features}"
+                # Kumpulkan nilai input
+                vals = []
+                error_message = None
+                for f in features:
+                    value = float(request.form[f])
+                    min_val, max_val = FEATURE_RANGES[f]
+                    if not (min_val <= value <= max_val):
+                        error_message = f"Nilai untuk {f.replace('_', ' ')} harus berada dalam rentang {min_val} hingga {max_val}."
+                        break
+                    vals.append(value)
+
+                if error_message:
+                    return render_template("index.html",
+                                           features=FEATURES_SVM,
+                                           manual_pred=None,
+                                           manual_input=None,
+                                           upload_results=None,
+                                           error_message=error_message)
+
+                # Jika validasi berhasil, lanjutkan ke prediksi
+                manual_input = dict(zip(features, vals))
+                X = scaler.transform([vals])
+                p = model.predict(X)
+                manual_pred = le.inverse_transform(p)[0]
+                manual_input['Prediction_Label'] = manual_pred
+
+                # Tambahkan status prediksi ke output
+                manual_input['Prediction_Status'] = 'Benar'  # Asumsikan benar untuk input manual
+                manual_input['Metode'] = model_choice.upper()
+                append_history({
+                    "fitur": {k: v for k, v in manual_input.items() if k not in ["Prediction_Label", "Prediction_Status", "Metode"]},
+                    "hasil_prediksi": manual_input.get("Prediction_Label"),
+                    "metode": manual_input.get("Metode"),
+                    "tipe": "Manual"
+                })
+
+                # Simpan input manual ke file sementara untuk diunduh sebagai JPG
+                with open("manual_input_temp.json", "w") as f:
+                    json.dump(manual_input, f)
+
+            except Exception as e:
+                return render_template("index.html",
+                                       features=FEATURES_SVM,
+                                       manual_pred=None,
+                                       manual_input=None,
+                                       upload_results=None,
+                                       error_message=f"Terjadi kesalahan: {str(e)}")
+
+        # 2) Jika datang dari upload CSV
+        elif 'submit_upload' in request.form:
+            try:
+                file = request.files['file']
+                if file and file.filename.endswith('.csv'):
+                    df = pd.read_csv(io.StringIO(file.stream.read().decode("UTF8")))
+
+                    # Pilih model berdasarkan input pengguna
+                    model_choice_upload = request.form['model_choice_upload']
+                    if model_choice_upload == 'svm':
+                        features = FEATURES_SVM
+                        scaler = scalersvm
+                        le = lesvm
+                        model = svm
+                    else:  # 'nn'
+                        features = FEATURES_NN
+                        scaler = scalernn
+                        le = lenn
+                        model = nn
+
+                    # Validasi kolom
+                    if not all(col in df.columns for col in features):
+                        upload_results = f"CSV harus memiliki kolom: {features}"
+                    else:
+                        X = scaler.transform(df[features])
+                        preds = model.predict(X)
+                        df['Prediction'] = le.inverse_transform(preds)
+
+                        # Simpan hasil prediksi ke file Excel
+                        output_file = "static/results_predictions.xlsx"
+                        df.to_excel(output_file, index=False)
+
+                        # Kirim DataFrame ke template
+                        upload_results = df.to_dict(orient='records')
+                        for _, row in df.iterrows():
+                            fitur = {col: row[col] for col in features}
+                            append_history({
+                                "fitur": fitur,
+                                "hasil_prediksi": row["Prediction"],
+                                "metode": model_choice_upload.upper(),
+                                "tipe": "Upload"
+                            })
                 else:
-                    X = scaler.transform(df[features])
-                    preds = model.predict(X)
-                    df['Prediction'] = le.inverse_transform(preds)
+                    upload_results = "File tidak valid. Unggah CSV."
 
-                    # Simpan hasil prediksi ke file Excel
-                    output_file = "static/results_predictions.xlsx"
-                    df.to_excel(output_file, index=False)
-
-                    # Kirim DataFrame ke template
-                    upload_results = df.to_dict(orient='records')
-            else:
-                upload_results = "File tidak valid. Unggah CSV."
+            except Exception as e:
+                upload_results = f"Terjadi kesalahan saat memproses file: {str(e)}"
 
     return render_template("index.html",
                            features=FEATURES_SVM,  # Default fitur untuk form manual
@@ -179,20 +203,88 @@ def download_template():
         download_name="template_student_lifestyle.csv"
     )
 
-def calculate_success_rate():
-    if prediction_stats["total_predictions"] == 0:
-        return 0
-    return (prediction_stats["successful_predictions"] / prediction_stats["total_predictions"]) * 100
 
 @app.route("/dashboard")
 def dashboard():
-    return render_template("dashboard.html",
-                           total_predictions=prediction_stats["total_predictions"],
-                           successful_predictions=prediction_stats["successful_predictions"],
-                           success_rate=calculate_success_rate())
+    return render_template("dashboard.html")
 
+
+@app.route("/thanks")
+def thanks():
+    return render_template("thanks.html")
+
+@app.route("/download_manual_prediction")
+def download_manual_prediction():
+    try:
+        if os.path.exists("manual_input_temp.json"):
+            with open("manual_input_temp.json", "r") as f:
+                manual_input = json.load(f)
+        else:
+            return "Tidak ada data prediksi manual terbaru.", 404
+    except Exception as e:
+        return f"Error: {e}", 500
+
+    # Siapkan teks tanpa Prediction_Status
+    lines = []
+    for k, v in manual_input.items():
+        if k != "Prediction_Status":
+            lines.append(f"{k.replace('_',' ')}: {v}")
+    # Tambahkan hasil label prediksi (ambil dari manual_input)
+    pred_label = manual_input.get("Prediction_Label") or manual_input.get("Prediction") or None
+    if pred_label:
+        lines.append(f"Hasil Prediksi: {pred_label}")
+
+    # Prediction_Status tidak perlu ditambahkan lagi
+
+    # Buat gambar dari teks
+    font = ImageFont.load_default()
+    padding = 10
+    width = 400
+    line_height = 20
+    height = line_height * len(lines) + 2 * padding
+
+    img = Image.new("RGB", (width, height), color="white")
+    draw = ImageDraw.Draw(img)
+    for i, line in enumerate(lines):
+        draw.text((padding, padding + i * line_height), line, fill="black", font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/jpeg", as_attachment=True, download_name="manual_prediction.jpg")
+
+@app.route("/history")
+def history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r") as f:
+            history = json.load(f)
+    else:
+        history = []
+
+    # Statistik jumlah prediksi per model
+    model_counts = {"SVM": 0, "NN": 0}
+    hasil_per_model = {"SVM": {}, "NN": {}}
+    for item in history:
+        model = item.get("metode", "UNKNOWN")
+        hasil = item.get("hasil_prediksi", "UNKNOWN")
+        if model in model_counts:
+            model_counts[model] += 1
+            hasil_per_model[model][hasil] = hasil_per_model[model].get(hasil, 0) + 1
+
+    # Insight teks
+    most_used = max(model_counts, key=model_counts.get) if history else "-"
+    most_pred_svm = max(hasil_per_model["SVM"], key=hasil_per_model["SVM"].get) if hasil_per_model["SVM"] else "-"
+    most_pred_nn = max(hasil_per_model["NN"], key=hasil_per_model["NN"].get) if hasil_per_model["NN"] else "-"
+
+    return render_template(
+        "history.html",
+        history=history,
+        model_counts=model_counts,
+        hasil_per_model=hasil_per_model,
+        most_used=most_used,
+        most_pred_svm=most_pred_svm,
+        most_pred_nn=most_pred_nn
+    )
 
 if __name__ == "__main__":
     app.run(debug=True)
-
-
