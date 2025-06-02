@@ -62,7 +62,7 @@ prediction_stats = load_stats()
 def home():
     return redirect(url_for('dashboard'))
 
-@app.route('/predict')
+@app.route('/predict', methods=['GET', 'POST'])
 def predict():
     manual_pred = None
     upload_results = None
