@@ -133,35 +133,42 @@
       {% endif %} -->
 
       {% if upload_results %}
-        <div class="mt-4">
-          <h3 class="text-lg font-semibold">Hasil Prediksi CSV</h3>
-          <div class="mt-4 overflow-x-auto">
-            <table class="min-w-full bg-white">
-              <thead>
-                <tr>
-                  {% for h in upload_results[0].keys() %}
-                  <th class="px-4 py-2 border-b">{{ h }}</th>
-                  {% endfor %}
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in upload_results %}
-                <tr class="hover:bg-gray-100">
-                  {% for v in row.values() %}
-                  <td class="px-4 py-2 border-b">{{ v }}</td>
-                  {% endfor %}
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+        {% if upload_results is string %}
+          <div class="mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
+            <strong class="font-bold">Error:</strong>
+            <span class="block sm:inline">{{ upload_results }}</span>
           </div>
+        {% else %}
           <div class="mt-4">
-            <a href="/static/results_predictions.xlsx" download
-              class="py-2 px-4 bg-green-600 text-white rounded-lg hover:bg-green-700">
-              Unduh Hasil Prediksi (Excel)
-            </a>
+            <h3 class="text-lg font-semibold">Hasil Prediksi CSV</h3>
+            <div class="mt-4 overflow-x-auto">
+              <table class="min-w-full bg-white">
+                <thead>
+                  <tr>
+                    {% for h in upload_results[0].keys() %}
+                    <th class="px-4 py-2 border-b">{{ h }}</th>
+                    {% endfor %}
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in upload_results %}
+                  <tr class="hover:bg-gray-100">
+                    {% for v in row.values() %}
+                    <td class="px-4 py-2 border-b">{{ v }}</td>
+                    {% endfor %}
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            <div class="mt-4">
+              <a href="/static/results_predictions.xlsx" download
+                class="py-2 px-4 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                Unduh Hasil Prediksi (Excel)
+              </a>
+            </div>
           </div>
-        </div>
+        {% endif %}
       {% endif %}
     </div>
   </div>
